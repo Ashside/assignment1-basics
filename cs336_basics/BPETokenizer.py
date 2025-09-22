@@ -187,6 +187,8 @@ class BPETokenizer:
         self.special_tokens = special_tokens
         self.bytes2idx = {v: k for k, v in vocab.items()} if vocab is not None else {}
         self.bytes_set = set(self.bytes2idx.keys())
+        self.max_token_length = max(len(v) for v in self.bytes2idx.keys()) if vocab is not None else 0
+
 
     @classmethod
     def from_files(cls, vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | None = None):
@@ -210,7 +212,10 @@ class BPETokenizer:
     def encode(self, text: str) -> list[int]:
         PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
         idxs = []
-        special_pat = "|".join(re.escape(t) for t in self.special_tokens) if self.special_tokens else ""
+        special_tokens_sorted = sorted(self.special_tokens or [], key=len, reverse=True)
+        special_pat = "(?:" + "|".join(
+            re.escape(t) for t in special_tokens_sorted) + ")" if special_tokens_sorted else ""
+
         pre_token_re = re.compile(PAT)
 
 
@@ -248,17 +253,18 @@ class BPETokenizer:
             while left < len(token_split):
                 # 尝试找到最长的subtoken
                 right = left + 1
-                while right <= len(token_split):
+                right_right = right
+                while right <= len(token_split) and (right - left) <= self.max_token_length:
                     subtoken = b"".join(token_split[left:right])
                     if subtoken in self.bytes_set:
-                        right += 1
-                    else:
-                        break
+                        right_right = right
+                    right += 1
+
                 # 注意上面的循环会多走一步，因此需要回退一步
-                right -= 1
-                subtoken = b"".join(token_split[left:right])
+                # right_right -= 1
+                subtoken = b"".join(token_split[left:right_right])
                 idxs.append(self.bytes2idx[subtoken])
-                left = right
+                left = right_right
 
         return idxs
 
@@ -315,3 +321,5 @@ class PairDict:
         max_pairs = [pair for pair, freq in self.pair2count.items() if freq == max_freq]
         # 返回其中字典序最大的pair
         return max(max_pairs)
+# ĠOllie
+# ĠOllie
