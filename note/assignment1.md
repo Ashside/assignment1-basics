@@ -21,7 +21,7 @@
 - 首先使用find_chunk_boundaries对文本进行预处理，将文本划分为数个chunk，注意需要将chunk解码为str才能应用正则表达式
 - 分别处理每个chunk
   - 注意要对chunk中的换行符进行替换处理`chunk = re.sub(r"\r\n?", "\n", chunk)`
-  - ![img.png](img.png)
+  - ![image-20250922184450525](./assets/image-20250922184450525.png)
   - 使用special_tokens的正则表达式将chunk划分为数个part，形成一个parts列表，如果没有特别token，就只有一个part
   - 对于每个part
     - 使用pre_tokenize正则表达式将part划分为数个pre_token，使用迭代器每次读入一个token进行处理
