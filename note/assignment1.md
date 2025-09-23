@@ -48,4 +48,27 @@
 
 ## 2. 使用BPE Tokenizer对文本进行Encode和Decode
 
+### 原理
+
+- 按照实验要求实现一个BPETokenizer类，能够读入vocab，merge，special_tokens
+- 注意special_token存在一个是另一个的子串的情况，所以需要将special_token按长度从大到小进行排序并编译为正则表达式，优先匹配更长的special_token，防止被覆盖
+- 主要是encode过程，同样将文本切分为token并编码为bytes后进行单字符划分，每次遍历相邻的两个bytes_pair，找到其中在merge列表中index最小的，将这两个合并（与训练过程中合并完全相同）形成新的划分，之后多次遍历并合并直到不存在可以合并的bytes为止
+
+### 优化
+
+- 暂时没有想到
+
+### 步骤
+
+- 编译pre_tokenize和special_token的正则表达式，注意special_token需要按长度排序
+- ![image-20250923140447246](./assets/image-20250923140447246.png)
+- 首先根据special_token将文本分段，在将其中的特殊token提取出来
+  - 分段的部分再次进行tokenize，之后依次将所有tokenize的部分和特殊token加入列表中
+- 遍历列表，准备进行编码
+  - 如果是特殊token，就先不做处理
+  - 如果是正常分词token
+    - 先单字符划分
+    - 遍历所有adj_pair的组合，找到其中在merge列表中index最小的pair，将这个pair合并，更新划分方式（pair合并后会成为一个bytes）
+
+
 ## 3. 计算文本的Perplexity

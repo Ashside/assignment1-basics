@@ -187,6 +187,7 @@ class BPETokenizer:
         self.special_tokens = special_tokens
         self.bytes2idx = {v: k for k, v in vocab.items()} if vocab is not None else {}
         self.bytes_set = set(self.bytes2idx.keys())
+        self.mergepair2idx = {pair: i for i, pair in enumerate(merges)} if merges is not None else {}
         self.max_token_length = max(len(v) for v in self.bytes2idx.keys()) if vocab is not None else 0
 
 
@@ -212,12 +213,13 @@ class BPETokenizer:
     def encode(self, text: str) -> list[int]:
         PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
         idxs = []
+        # 将special_tokens按长度从大到小排序，避免子串被优先匹配
         special_tokens_sorted = sorted(self.special_tokens or [], key=len, reverse=True)
         special_pat = "(?:" + "|".join(
             re.escape(t) for t in special_tokens_sorted) + ")" if special_tokens_sorted else ""
 
         pre_token_re = re.compile(PAT)
-
+        special_token_by_set:set[bytes] = set(t.encode("utf-8") for t in special_tokens_sorted)
 
         # 首先根据特殊符号进行分段，将每一段进行预分词，然后将特殊符号和预分词结果交替合并
         if special_pat != "":
@@ -225,7 +227,7 @@ class BPETokenizer:
             segments = special_re.split(text)
             specials = special_re.findall(text)
             # 交替合并segments和specials
-            combined = []
+            combined:list[bytes] = []
             for seg, spec in zip(segments, specials + [""]):
                 # 如果第一个token就是special token，那么seg会是空字符串
                 # 所以可以直接if seg，避免加入空字符串
@@ -233,38 +235,39 @@ class BPETokenizer:
                     # 使用预分词正则表达式进行预分词，将分词结果保存下来
                     tokens = pre_token_re.findall(seg)
                     for token in tokens:
-                        combined.append(token)
+                        combined.append(token.encode("utf-8"))
                 if spec:
-                    combined.append(spec)
+                    combined.append(spec.encode("utf-8"))
         else:
-            combined = [text]
+            combined = [text.encode("utf-8")]
         # 此时combined中每个元素要么是特殊符号，要么是完成预分词的token
         # 准备开始编码
+        tokens_by : list[bytes] = []
         for token in combined:
-            token_by = token.encode("utf-8")
-            # 先检查token_by是否在vocab中
-            if token_by in self.bytes2idx:
-                idxs.append(self.bytes2idx[token_by])
+            if token in special_token_by_set:
+                tokens_by.append(token)
                 continue
-            # 否则，进行BPE编码
-            # 首先将token_by拆分为单个字符
-            token_split = [bytes([b]) for b in token_by]
-            left = right = 0
-            while left < len(token_split):
-                # 尝试找到最长的subtoken
-                right = left + 1
-                right_right = right
-                while right <= len(token_split) and (right - left) <= self.max_token_length:
-                    subtoken = b"".join(token_split[left:right])
-                    if subtoken in self.bytes_set:
-                        right_right = right
-                    right += 1
+            token_split:list[bytes] = [bytes([b]) for b in token]
 
-                # 注意上面的循环会多走一步，因此需要回退一步
-                # right_right -= 1
-                subtoken = b"".join(token_split[left:right_right])
-                idxs.append(self.bytes2idx[subtoken])
-                left = right_right
+            while True:
+                # 在当前划分模式下，找出所有相邻对中出现在mergepair2idx中的pair
+                candidate_pairs = [(pair, self.mergepair2idx[pair]) for pair in zip(token_split[:-1], token_split[1:]) if pair in self.mergepair2idx]
+                if not candidate_pairs:
+                    break
+                # 选择其中index最小的pair进行合并
+                best_pair = min(candidate_pairs, key=lambda x: x[1])[0]
+                token_split = get_new_split(token_split, best_pair, best_pair[0] + best_pair[1])
+            tokens_by.extend(token_split)
+        # 最后，将tokens_by转换为对应的idx
+        for token in tokens_by:
+            if token in self.bytes2idx:
+                idxs.append(self.bytes2idx[token])
+            else:
+                raise ValueError(f"Token {token} not in vocabulary.")
+
+
+
+
 
         return idxs
 
