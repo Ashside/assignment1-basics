@@ -23,12 +23,13 @@ class Linear(nn.Module):
         self.weight = nn.Parameter(torch.empty((out_features,in_features),device=device,dtype=dtype))
         # self.bias = nn.Parameter(torch.empty((out_features,),device=device,dtype=dtype))
         # 使用trunc_normal_初始化权重
-        self.mu = 0.0
-        self.std = math.sqrt(2/(in_features + out_features))
-        self.a = -3*self.std
-        self.b = 3*self.std
-        with torch.no_grad():
-            self.weight = nn.init.trunc_normal_(self.weight,mean=self.mu,std=self.std,a=self.a,b=self.b)
+        # 原地初始化，避免重绑定导致丢失 Parameter 身份
+        mu = 0.0
+        std = math.sqrt(2 / (in_features + out_features))
+        a = -3 * std
+        b = 3 * std
+        nn.init.trunc_normal_(self.weight, mean=mu, std=std, a=a, b=b)
+
 
     def forward(self, x: torch.Tensor)->torch.Tensor:
         return einsum(
@@ -47,13 +48,9 @@ class Embedding(nn.Module):
         super().__init__()
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
-        self.mu = 0.0
-        self.std = 1.0
-        self.a = -3*self.std # 即[-3,3]之间
-        self.b = 3*self.std
+
         self.weight = nn.Parameter(torch.empty((num_embeddings,embedding_dim),device=device,dtype=dtype))
-        with torch.no_grad():
-            self.weight = nn.init.trunc_normal_(self.weight,mean=self.mu,std=self.std,a=self.a,b=self.b)
+        nn.init.trunc_normal_(self.weight, mean=0.0, std=1.0, a=-3.0, b=3.0)
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         return self.weight[token_ids]
@@ -81,7 +78,11 @@ class RMSNorm(nn.Module):
         return torch.sqrt(x.pow(2).mean(-1,keepdim=True)+self.eps)
 
 class SwiGLU(nn.Module):
-    def __init__(self,d_model,d_ff):
+    def __init__(self,
+                 d_model,
+                 d_ff,
+                 device:torch.device|None=None,
+                 dtype:torch.dtype|None=None):
         super().__init__()
         assert  2 <= d_ff / d_model <= 3 , r"d_ff is approximately  8/3 times d_model"
         assert d_ff % 64 == 0, "d_ff must be divisible by 64"
@@ -89,11 +90,11 @@ class SwiGLU(nn.Module):
         self.d_ff = d_ff
 
 
-        self.w1 = Linear(d_ff,d_model)
+        self.w1 = Linear(d_ff,d_model,device=device,dtype=dtype)
          # w1: d_ff, d_model
-        self.w2 = Linear(d_model,d_ff)
+        self.w2 = Linear(d_model,d_ff,device=device,dtype=dtype)
         # w2: d_model, d_ff
-        self.w3 = Linear(d_ff,d_model)
+        self.w3 = Linear(d_ff,d_model,device=device,dtype=dtype)
 
 
 
@@ -235,24 +236,28 @@ class TransformerBlock(nn.Module):
                  d_ff:int,
                  max_seq_len:int,
                  theta:float,
-                 weights = None):
+                 device:torch.device|None=None,
+                 dtype:torch.dtype|None=None
+                 ):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
         self.d_ff = d_ff
         self.max_seq_len =max_seq_len
         self.theta = theta
-        self.lm1 = RMSNorm(self.d_model)
-        self.lm2 = RMSNorm(self.d_model)
-        self.ffn = SwiGLU(self.d_model,self.d_ff)
+        self.lm1 = RMSNorm(self.d_model,device=device,dtype=dtype)
+        self.lm2 = RMSNorm(self.d_model,device=device,dtype=dtype)
+        self.ffn = SwiGLU(self.d_model,self.d_ff,device=device,dtype=dtype)
 
         self.mha = MultiheadSelfAttention(
             self.d_model,
             self.num_heads,
             self.theta,
             self.max_seq_len,
+            device=device,
+            dtype=dtype
         )
-        self.weights = weights
+
         
     def forward(self, x:torch.Tensor):
         # x (batch_size, seq_len, d_model)
@@ -265,20 +270,60 @@ class TransformerBlock(nn.Module):
         self.mha.token_positions = token_positons
 
 
-
         y = x + self.mha(self.lm1(x),self.lm1(x),self.lm1(x))
 
         y_norm = self.lm2(y)
-        print(y_norm.shape)
-        print(self.d_model)
-        print(self.d_ff)
+
         output = y + self.ffn(y_norm)
 
         return output
 
 
 
+class TransformerLanguageModel(nn.Module):
+    def __init__(self,
+                 vocab_size,
+                 context_length,
+                 d_model,
+                 num_layers,
+                 num_heads: int,
+                 d_ff: int,
+                 rope_theta: float,
+                 device:torch.device|None=None,
+                    dtype:torch.dtype|None=None
+                 ):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.context_length = context_length
+        self.num_layers = num_layers
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        self.rope_theta = rope_theta
 
+        self.embedding = Embedding(vocab_size,d_model,device=device,dtype=dtype)
+        self.transformer_blocks = nn.ModuleList([
+            TransformerBlock(
+                d_model,
+                num_heads,
+                d_ff,
+                context_length,
+                rope_theta,
+                device=device,
+                dtype=dtype
+            ) for _ in range(num_layers)
+        ])
+        self.lm = RMSNorm(d_model,device=device,dtype=dtype)
+        self.head = Linear(d_model,vocab_size,device=device,dtype=dtype)
+
+    def forward(self, token_ids:torch.Tensor)->torch.Tensor:
+        x = self.embedding(token_ids) # (batch_size, seq_len, d_model)
+        for block in self.transformer_blocks:
+            x = block(x) # (batch_size, seq_len, d_model)
+        x = self.lm(x) # (batch_size, seq_len, d_model)
+        logits = self.head(x) # (batch_size, seq_len, vocab_size)
+        # 为什么这里不用softmax？？？？？？
+        return logits
 
 
 
