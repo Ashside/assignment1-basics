@@ -87,31 +87,26 @@ class SwiGLU(nn.Module):
         assert d_ff % 64 == 0, "d_ff must be divisible by 64"
         self.d_model = d_model
         self.d_ff = d_ff
-        self.w1 = nn.Parameter(torch.ones(d_ff,d_model))
+
+
+        self.w1 = Linear(d_ff,d_model)
          # w1: d_ff, d_model
-        self.w2 = nn.Parameter(torch.ones(d_model,d_ff))
+        self.w2 = Linear(d_model,d_ff)
         # w2: d_model, d_ff
-        self.w3 = nn.Parameter(torch.ones(d_ff,d_ff))
-        # w3: d_ff, d_ff
+        self.w3 = Linear(d_ff,d_model)
+
 
 
 
     def forward(self,in_feature:torch.Tensor)->torch.Tensor:
 
-        wx1 = einsum(
-            in_feature,self.w1,
-            "... d_model, d_ff d_model -> ... d_ff"
-        )
+
+
+        wx1 = self.w1(in_feature) # ... d_ff
         silu = wx1 * torch.sigmoid(wx1)
-        wx3 = einsum(
-            in_feature,self.w3,
-            "... d_model, d_ff d_model-> ... d_ff"
-        )
+        wx3 = self.w3(in_feature) # ... d_ff
         x2 = silu * wx3 # ... d_ff
-        wx2 = einsum(
-            x2,self.w2,
-            "... d_ff, d_model d_ff -> ... d_model"
-        )
+        wx2 = self.w2(x2) # ... d_model
         return wx2
 
 class RoPE(nn.Module):
@@ -134,7 +129,7 @@ class RoPE(nn.Module):
         self.register_buffer("sine_buffer",self.sine)
 
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor)-> torch.Tensor:
-
+        token_positions = token_positions.to(torch.int)
         cos = self.cosine_buffer[token_positions] # (batch_size, seq_len, d_k/2)
         sin = self.sine_buffer[token_positions] # (batch_size, seq_len, d_k/2)
         x_even = x[..., ::2] # (batch_size, seq_len, d_k/2)
@@ -161,6 +156,7 @@ def scaled_dot_product_attention(Q:torch.Tensor,K:torch.Tensor,V:torch.Tensor,ma
     for i in range(len(mask.shape)-len(scores.shape)):
         mask = mask.unsqueeze(0)
     # 注意masked_fill_的逻辑和原mask矩阵不同
+    # 需要将mask中为False的位置填充为-inf
     scores = scores.masked_fill(mask==False,float("-inf"))
     attn = softmax(scores,dim=-1)
     output = einsum(
@@ -170,6 +166,115 @@ def scaled_dot_product_attention(Q:torch.Tensor,K:torch.Tensor,V:torch.Tensor,ma
     return output
 
 
+class MultiheadSelfAttention(nn.Module):
+    def __init__(self,
+                 d_model:int,
+                 num_heads:int,
+                 theta:float = None,
+                 max_seq_len:int=None,
+                 token_positions=None,
+                 device:torch.device|None=None,
+                 dtype:torch.dtype|None=None):
+        super().__init__()
+        assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_k = d_model // num_heads
+        self.d_v = self.d_k
+        self.wq = Linear(d_model,d_model,device=device,dtype=dtype)
+        self.wk = Linear(d_model,d_model,device=device,dtype=dtype)
+        self.wv = Linear(d_model,d_model,device=device,dtype=dtype)
+        self.wo = Linear(d_model,d_model,device=device,dtype=dtype)
+
+
+        if theta is not None and max_seq_len is not None:
+            self.rope = RoPE(theta,d_model//num_heads,max_seq_len,device=device)
+            self.token_positions = token_positions
+
+
+    def forward(self,Q,K,V):
+
+        seq_len = Q.shape[1]
+        xq,xk,xv = self.wq(Q),self.wk(K),self.wv(V) # (batch_size, seq_len, d_model)
+        xq = rearrange(
+            xq,
+            "batch_size seq_len (num_heads d_k) -> batch_size num_heads seq_len d_k",
+            num_heads = self.num_heads,
+            d_k = self.d_k,
+        )
+        xk = rearrange(
+            xk,
+            "batch_size seq_len (num_heads d_k) -> batch_size num_heads seq_len d_k",
+            num_heads = self.num_heads,
+            d_k = self.d_k,
+        )
+        xv = rearrange(
+            xv,
+            "batch_size seq_len (num_heads d_k) -> batch_size num_heads seq_len d_k",
+            num_heads = self.num_heads,
+            d_k = self.d_k,
+        )
+        # 保留一个下三角为1，其余为0的掩码矩阵，默认包括主对角线
+        attention_mask = torch.tril(torch.ones((seq_len,seq_len),dtype=torch.bool,device=Q.device))
+        if hasattr(self,"rope"):
+            token_positions = self.token_positions
+            xq = self.rope(xq,token_positions)
+            xk = self.rope(xk,token_positions)
+        x = scaled_dot_product_attention(xq,xk,xv,attention_mask) # (batch_size, num_heads, seq_len, d_v)
+        x = rearrange(
+            x,
+            "batch_size num_heads seq_len d_v -> batch_size seq_len (num_heads d_v)"
+        ) # (batch_size, seq_len, d_model)
+        x = self.wo(x) # (batch_size, seq_len, d_model)
+        return x
+
+class TransformerBlock(nn.Module):
+    def __init__(self,
+                 d_model:int,
+                 num_heads:int,
+                 d_ff:int,
+                 max_seq_len:int,
+                 theta:float,
+                 weights = None):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        self.max_seq_len =max_seq_len
+        self.theta = theta
+        self.lm1 = RMSNorm(self.d_model)
+        self.lm2 = RMSNorm(self.d_model)
+        self.ffn = SwiGLU(self.d_model,self.d_ff)
+
+        self.mha = MultiheadSelfAttention(
+            self.d_model,
+            self.num_heads,
+            self.theta,
+            self.max_seq_len,
+        )
+        self.weights = weights
+        
+    def forward(self, x:torch.Tensor):
+        # x (batch_size, seq_len, d_model)
+        batch_size = x.shape[0]
+        seq_len = x.shape[1]
+        assert self.d_model == x.shape[2]
+
+
+        token_positons = torch.arange(seq_len,device=x.device,dtype=torch.int)
+        self.mha.token_positions = token_positons
+
+
+
+        y = x + self.mha(self.lm1(x),self.lm1(x),self.lm1(x))
+
+        y_norm = self.lm2(y)
+        print(y_norm.shape)
+        print(self.d_model)
+        print(self.d_ff)
+        output = y + self.ffn(y_norm)
+
+        return output
 
 
 
@@ -210,27 +315,5 @@ def scaled_dot_product_attention(Q:torch.Tensor,K:torch.Tensor,V:torch.Tensor,ma
 
 
 
-if __name__ == "__main__":
-    channel_last = torch.randn(64,32,32,3)
-    B =torch.randn(32*32,32*32)
 
 
-    height = weight = 32
-    channel_first = rearrange(
-        channel_last,
-        "b h w c -> b c (h w)"
-    )
-    print(channel_first.shape)
-    channel_first_transformed = einsum(
-        channel_first,B,
-        "b c pixel_in,pixel_out pixel_in -> b c pixel_out"
-
-    )
-    print(channel_first_transformed.shape)
-    channel_last_transformed = rearrange(
-        channel_first_transformed,
-        "b c (h w) -> b h w c",
-        h=height,
-        w=weight,
-    )
-    print(channel_last_transformed.shape)

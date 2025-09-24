@@ -91,9 +91,9 @@ def run_swiglu(
     # swiglu.w3.weight.data = w3_weight
     from cs336_basics import LMArchitecture
     swiglu = LMArchitecture.SwiGLU(d_model, d_ff)
-    swiglu.w1.data = w1_weight
-    swiglu.w2.data = w2_weight
-    swiglu.w3.data = w3_weight
+    swiglu.w1.weight.data = w1_weight
+    swiglu.w2.weight.data = w2_weight
+    swiglu.w3.weight.data = w3_weight
 
     return swiglu(in_features)
 
@@ -151,7 +151,13 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    from cs336_basics import LMArchitecture
+    mha = LMArchitecture.MultiheadSelfAttention(d_model, num_heads, device=in_features.device, dtype=in_features.dtype)
+    mha.wq.weight.data = q_proj_weight
+    mha.wk.weight.data = k_proj_weight
+    mha.wv.weight.data = v_proj_weight
+    mha.wo.weight.data = o_proj_weight
+    return mha(in_features, in_features, in_features)
 
 
 def run_multihead_self_attention_with_rope(
@@ -191,7 +197,22 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    from cs336_basics import LMArchitecture
+    mha = LMArchitecture.MultiheadSelfAttention(
+        d_model,
+        num_heads,
+        theta,
+        max_seq_len,
+        token_positions,
+        device=in_features.device,
+        dtype=in_features.dtype,
+    )
+    mha.wq.weight.data = q_proj_weight
+    mha.wk.weight.data = k_proj_weight
+    mha.wv.weight.data = v_proj_weight
+    mha.wo.weight.data = o_proj_weight
+    return mha(in_features, in_features, in_features)
+
 
 
 def run_rope(
@@ -288,7 +309,19 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    from cs336_basics import LMArchitecture
+    tb = LMArchitecture.TransformerBlock(d_model,num_heads,d_ff,max_seq_len,theta)
+    tb.mha.wq.weight.data = weights['attn.q_proj.weight']
+    tb.mha.wk.weight.data = weights['attn.k_proj.weight']
+    tb.mha.wv.weight.data = weights['attn.v_proj.weight']
+    tb.mha.wo.weight.data = weights['attn.output_proj.weight']
+    tb.lm1.weight.data = weights['ln1.weight']
+    tb.lm2.weight.data = weights['ln2.weight']
+    tb.ffn.w1.weight.data = weights['ffn.w1.weight']
+    tb.ffn.w2.weight.data = weights['ffn.w2.weight']
+    tb.ffn.w3.weight.data = weights['ffn.w3.weight']
+
+    return tb(in_features)
 
 
 def run_transformer_lm(
