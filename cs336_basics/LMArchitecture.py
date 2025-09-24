@@ -151,6 +151,23 @@ def softmax(x:torch.Tensor,dim:int)->torch.Tensor:
     x_exp_sum = x_exp.sum(dim=dim,keepdim=True)
     return x_exp / x_exp_sum
 
+def scaled_dot_product_attention(Q:torch.Tensor,K:torch.Tensor,V:torch.Tensor,mask:torch.Tensor):
+    d_k = Q.shape[-1]
+    scores = einsum(
+        Q , K,
+        "... queries d_k , ... keys d_k -> ... queries keys"
+    )
+    scores = scores / torch.sqrt(torch.tensor(d_k,dtype=scores.dtype))
+    for i in range(len(mask.shape)-len(scores.shape)):
+        mask = mask.unsqueeze(0)
+    # 注意masked_fill_的逻辑和原mask矩阵不同
+    scores = scores.masked_fill(mask==False,float("-inf"))
+    attn = softmax(scores,dim=-1)
+    output = einsum(
+        attn,V,
+        "... queries keys, ... keys d_v -> ... queries d_v"
+    )
+    return output
 
 
 
