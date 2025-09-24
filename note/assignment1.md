@@ -74,6 +74,15 @@
 
 ### 原理
 
-- 依次实现线性层、Embedding层
+- 依次实现线性层、Embedding层、RMSNorm层、SwiGLU层
 - 初始化权重时，注意使用`self.weight = nn.init.trunc_normal_()`
 - 注意这里没有偏置项
+
+- SwiGLU层结合silu和glu两种激活函数
+  - silu在0处相比relu更加光滑
+  - glu使用按元素乘法，通过在保留非线性能力的同时为梯度提供一条线性路径来减少深度结构中的梯度消失问题
+  - ![image-20250924133456849](./assets/image-20250924133456849.png)
+  - ![image-20250924133502876](./assets/image-20250924133502876-1758692103401-1.png)
+  - ![image-20250924133512240](./assets/image-20250924133512240.png)
+
+- 
