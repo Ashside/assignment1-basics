@@ -70,5 +70,10 @@
     - 先单字符划分
     - 遍历所有adj_pair的组合，找到其中在merge列表中index最小的pair，将这个pair合并，更新划分方式（pair合并后会成为一个bytes）
 
+## 3. 实现LanguageModelArchitecture
 
-## 3. 计算文本的Perplexity
+### 原理
+
+- 依次实现线性层、Embedding层
+- 初始化权重时，注意使用`self.weight = nn.init.trunc_normal_()`
+- 注意这里没有偏置项
