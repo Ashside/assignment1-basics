@@ -109,6 +109,20 @@ class SwiGLU(nn.Module):
         x2 = silu * wx3 # ... d_ff
         wx2 = self.w2(x2) # ... d_model
         return wx2
+class SiLU(nn.Module):
+    def __init__(self,d_model:int,device : torch.device | None = None):
+        super().__init__()
+        self.d_model = d_model
+        self.device = device
+        self.weight = torch.ones(self.d_model,self.d_model,device=device)
+    def forward(self,in_features):
+        wx1 = einsum(
+            in_features,self.weight,
+            "... d_model, d_model d_model -> ... d_model"
+        )
+        silu = wx1 * torch.sigmoid(wx1)
+        return silu
+
 
 class RoPE(nn.Module):
     def __init__(self, theta: float, d_k: int, max_seq_len: int, device:torch.device |None = None):
