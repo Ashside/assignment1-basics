@@ -222,7 +222,7 @@ class BPETokenizer:
         special_token_by_set:set[bytes] = set(t.encode("utf-8") for t in special_tokens_sorted)
 
         # 首先根据特殊符号进行分段，将每一段进行预分词，然后将特殊符号和预分词结果交替合并
-        if special_pat != "":
+        if special_tokens_sorted:
             special_re = re.compile(special_pat)
             segments = special_re.split(text)
             specials = special_re.findall(text)
@@ -239,7 +239,8 @@ class BPETokenizer:
                 if spec:
                     combined.append(spec.encode("utf-8"))
         else:
-            combined = [text.encode("utf-8")]
+            combined = [ token.encode("utf-8") for token in pre_token_re.findall(text)]
+        # 到这里为止，combined中已经包含了所有的预分词结果和特殊符号
         # 此时combined中每个元素要么是特殊符号，要么是完成预分词的token
         # 准备开始编码
         tokens_by : list[bytes] = []
@@ -324,5 +325,5 @@ class PairDict:
         max_pairs = [pair for pair, freq in self.pair2count.items() if freq == max_freq]
         # 返回其中字典序最大的pair
         return max(max_pairs)
-# ĠOllie
-# ĠOllie
+
+

@@ -689,4 +689,5 @@ def run_train_bpe(
     # tokenizer = BPETokenizer()
     vocab, merges = get_bpe_train(input_path, vocab_size, special_tokens)
 
+
     return vocab, merges
